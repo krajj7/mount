@@ -184,11 +184,9 @@
         `(do
            ;; (log (str "|| mounting... " ~state-name))
            ;; only create/redefine a new state iff this is not a running ^{:on-reload :noop}
+           (~'defonce ~state (->DerefableState ~state-name))
            (if-not (running-noop? ~state-name)
-             (do
-               (~'defonce ~state (->DerefableState ~state-name))
-               (mount-it (~'var ~state) ~state-name ~s-meta))
-             (~'defonce ~state (current-state ~state-name)))
+             (mount-it (~'var ~state) ~state-name ~s-meta))
            (~'var ~state)))))
 
 (defmacro defstate! [state & {:keys [start! stop!]}]
