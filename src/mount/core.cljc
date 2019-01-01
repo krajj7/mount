@@ -97,6 +97,11 @@
       (swap! running assoc state {:stop stop})
       (update-meta! [state :status] #{:started}))))
 
+(defn- upgrade [{:keys [new-fns] :as state}]
+  (-> state
+      (dissoc :new-fns :start :stop)
+      (merge new-fns)))
+
 (defn- down
   "brings a state down by
     * calling its 'stop' function if it is defined
@@ -104,7 +109,7 @@
       * in case of a failure on 'stop', state is still marked as :stopped, and the error is logged / printed
     * dissoc'ing it from the running states
     * marking it as :stopped"
-  [state {:keys [stop status] :as current} done]
+  [state {:keys [stop status new-fns] :as current} done]
   (when (some status #{:started})
     (if stop
       (if-let [cause (-> (on-error (str "could not stop [" state "] due to")
@@ -115,6 +120,8 @@
         (alter-state! current (->NotStartedState state)))
         (alter-state! current (->NotStartedState state)))    ;; (!) if a state does not have :stop when _should_ this might leak
     (swap! running dissoc state)
+    (if new-fns
+      (update-meta! [state] (upgrade current)))
     (update-meta! [state :status] #{:stopped})))
 
 (defn running-states []
@@ -164,6 +171,12 @@
       (log (str ">> starting.. " s-name " (namespace was recompiled)"))
       (up s-name with-inst (atom #{})))))
 
+(defn prepare-upgrade [state new-fns]
+  (update-meta! [state :new-fns] new-fns))
+
+(defn mount-mode []
+  @mode)
+
 (deftime
 
 (defmacro defstate
@@ -177,16 +190,21 @@
         state-name (with-ns *ns* state)
         order (make-state-seq state-name)]
       (validate lifecycle)
-      (let [s-meta (cond-> {:order order
-                            :start `(fn [] ~start)
-                            :status #{:stopped}}
-                     stop (assoc :stop `(fn [] ~stop)))]
+      (let [funs (cond-> {:start `(fn [] ~start)}
+                   stop (assoc :stop `(fn [] ~stop)))
+            s-meta (assoc funs :order order :status #{:stopped})]
         `(do
            ;; (log (str "|| mounting... " ~state-name))
            ;; only create/redefine a new state iff this is not a running ^{:on-reload :noop}
-           (~'defonce ~state (->DerefableState ~state-name))
            (if-not (running-noop? ~state-name)
-             (mount-it (~'var ~state) ~state-name ~s-meta))
+             (do
+               (~'defonce ~state (->DerefableState ~state-name))
+               (mount-it (~'var ~state) ~state-name ~s-meta))
+             (do
+               (if (= (mount-mode) :cljc)
+                 (~'defonce ~state (->DerefableState ~state-name))
+                 (~'defonce ~state (current-state ~state-name)))
+               (prepare-upgrade ~state-name ~funs)))
            (~'var ~state)))))
 
 (defmacro defstate! [state & {:keys [start! stop!]}]
